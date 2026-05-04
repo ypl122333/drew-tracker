@@ -1,6 +1,14 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from database import get_connection, init_db
+from pydantic import BaseModel
+
+from database import (
+    PRACTICE_STAT_KEYS,
+    get_players_with_practice,
+    increment_practice_stat,
+    init_db,
+    reset_practice_stats,
+)
 
 app = FastAPI()
 
@@ -14,24 +22,42 @@ app.add_middleware(
 
 init_db()
 
+
+class PracticeStatUpdate(BaseModel):
+    statKey: str
+    delta: int = 1
+
+
 @app.get("/")
 def home():
     return {"message": "Backend is running"}
 
 @app.get("/players")
 def get_players():
-    conn = get_connection()
-    cursor = conn.cursor()
+    return get_players_with_practice()
 
-    cursor.execute(
-        """
-        SELECT id, name, number, pos, img
-        FROM players
-        ORDER BY id
-        """
-    )
-    rows = cursor.fetchall()
 
-    conn.close()
+@app.get("/practice")
+def get_practice():
+    return get_players_with_practice()
 
-    return [dict(row) for row in rows]
+
+@app.post("/practice/{player_id}")
+def update_practice(player_id: int, payload: PracticeStatUpdate):
+    if payload.statKey not in PRACTICE_STAT_KEYS:
+        raise HTTPException(status_code=400, detail="Invalid practice stat key")
+
+    try:
+        increment_practice_stat(player_id, payload.statKey, payload.delta)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+    return get_players_with_practice()
+
+
+@app.post("/practice/reset")
+def reset_practice():
+    reset_practice_stats()
+    return get_players_with_practice()

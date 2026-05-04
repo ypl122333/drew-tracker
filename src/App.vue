@@ -1,21 +1,15 @@
-
 <script setup>
-import { ref, onBeforeUnmount, onMounted, watch } from "vue"
+import { onBeforeUnmount, onMounted, ref, watch } from "vue"
 import {
+  createEmptyPracticeStats,
   createPlayerState,
   defaultStarterNames,
-  createEmptyPracticeStats,
   practiceCategories,
 } from "./data/players"
-
-//导入子组件
-//只有在这里导入，才能在后面的template中使用
 import LandingView from "./components/LandingView.vue"
 import PracticeView from "./components/PracticeView.vue"
 import GameView from "./components/GameView.vue"
 
-//响应式变量：当这些值改变时，依赖它们的 UI 会自动更新
-// 括号里是初始值
 const currentView = ref("landing")
 const players = ref([])
 const gameClockSeconds = ref(1200)
@@ -23,75 +17,91 @@ const gameState = ref("SETUP")
 const gameStatusText = ref(null)
 const gameMainButtonText = ref(null)
 const tickerInterval = ref(null)
-const STORAGE_KEY = "drewTrackerState_v23_vue"
+const practiceSyncInterval = ref(null)
+const STORAGE_KEY = "drewTrackerState_v24_vue"
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000"
+const PRACTICE_SYNC_INTERVAL_MS = 2000
 const isInitializing = ref(true)
 const initializationError = ref("")
+const isPracticeSyncing = ref(false)
+const practiceSyncError = ref("")
 
-//页面切换
-function switchView(view) {
-  //如果比赛正在计时，离开Game页面时先暂停计时器
-  if (currentView.value === "game" && view !== "game" && gameState.value === "PLAYING") {
-    gameState.value = "PAUSED"
-    gameStatusText.value = "PAUSED"
-    gameMainButtonText.value = "RESUME CLOCK"
-    stopTicker()
-  }
-
-  currentView.value = view
-}
-
-// 为什么很多关于Practice/Game功能的函数要写在App这里？
-// A:因为players等变量是根组件的变量，需要服从“谁拥有数据，谁管理逻辑”原则
-
-
-
-//Practice功能逻辑区
-
-
-function updatePracticeStat(playerId, key, delta) {
-  const player = players.value.find((p) => p.id === playerId)
-  if (!player) return
-
-  if (!player.practiceStats) {
-    player.practiceStats = createEmptyPracticeStats()
-  }
-
-  if (player.practiceStats[key] === undefined) {
-    player.practiceStats[key] = 0
-  }
-
-  player.practiceStats[key] += delta
-
-  player.practiceTotal = practiceCategories.reduce(
-    (sum, category) => sum + (player.practiceStats[category.key] || 0),
+function calculatePracticeTotal(practiceStats) {
+  return practiceCategories.reduce(
+    (sum, category) => sum + (practiceStats?.[category.key] || 0),
     0,
   )
 }
 
-function sortPracticePlayers() {
-  //留意sort语法，这里是降序
-  players.value.sort((a, b) => (b.practiceTotal || 0) - (a.practiceTotal || 0))
+function createSyncedPlayerState(rawPlayer, existingPlayer = null) {
+  const basePlayer = createPlayerState(rawPlayer)
+  const practiceStats = {
+    ...createEmptyPracticeStats(),
+    ...(rawPlayer.practiceStats || {}),
+  }
+
+  return {
+    ...basePlayer,
+    ...(existingPlayer
+      ? {
+          currentStint: existingPlayer.currentStint ?? basePlayer.currentStint,
+          totalSeconds: existingPlayer.totalSeconds ?? basePlayer.totalSeconds,
+          fouls: existingPlayer.fouls ?? basePlayer.fouls,
+          isOnCourt: existingPlayer.isOnCourt ?? basePlayer.isOnCourt,
+          lastSubOutClock: existingPlayer.lastSubOutClock ?? basePlayer.lastSubOutClock,
+          subOutGameClock: existingPlayer.subOutGameClock ?? basePlayer.subOutGameClock,
+        }
+      : {}),
+    practiceStats,
+    practiceTotal: rawPlayer.practiceTotal ?? calculatePracticeTotal(practiceStats),
+  }
 }
 
-function resetPractice() {
-  players.value.forEach((player) => {
-    if (!player.practiceStats) {
-      player.practiceStats = createEmptyPracticeStats()
-    }
+function buildPlayersFromBackend(
+  rawPlayers,
+  { preserveCurrentState = true, preserveCurrentOrder = true } = {},
+) {
+  const existingPlayersById = new Map(players.value.map((player) => [player.id, player]))
+  const currentOrderById = new Map(players.value.map((player, index) => [player.id, index]))
 
-    practiceCategories.forEach((category) => {
-      player.practiceStats[category.key] = 0
-    })
+  const nextPlayers = rawPlayers.map((player) =>
+    createSyncedPlayerState(
+      player,
+      preserveCurrentState ? existingPlayersById.get(player.id) : null,
+    ),
+  )
 
-    player.practiceTotal = 0
-  })
+  if (preserveCurrentOrder && currentOrderById.size > 0) {
+    nextPlayers.sort(
+      (a, b) => (currentOrderById.get(a.id) ?? a.id) - (currentOrderById.get(b.id) ?? b.id),
+    )
+  }
 
-  players.value.sort((a, b) => a.id - b.id)
+  return nextPlayers
+}
+
+function saveGameState() {
+  const state = {
+    players: players.value.map((player) => ({
+      id: player.id,
+      currentStint: player.currentStint,
+      totalSeconds: player.totalSeconds,
+      fouls: player.fouls,
+      isOnCourt: player.isOnCourt,
+      lastSubOutClock: player.lastSubOutClock,
+      subOutGameClock: player.subOutGameClock,
+    })),
+    gameClockSeconds: gameClockSeconds.value,
+    gameState: gameState.value === "PLAYING" ? "PAUSED" : gameState.value,
+    gameStatusText: gameState.value === "PLAYING" ? "PAUSED" : gameStatusText.value,
+    gameMainButtonText: gameState.value === "PLAYING" ? "RESUME CLOCK" : gameMainButtonText.value,
+  }
+
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
 }
 
 function mergePlayersWithSavedState(basePlayers, savedPlayers) {
-  const mergedPlayers = basePlayers.map((basePlayer) => {
+  return basePlayers.map((basePlayer) => {
     const savedPlayer = savedPlayers.find((player) => player.id === basePlayer.id)
 
     if (!savedPlayer) {
@@ -106,66 +116,8 @@ function mergePlayersWithSavedState(basePlayers, savedPlayers) {
       isOnCourt: savedPlayer.isOnCourt ?? basePlayer.isOnCourt,
       lastSubOutClock: savedPlayer.lastSubOutClock ?? basePlayer.lastSubOutClock,
       subOutGameClock: savedPlayer.subOutGameClock ?? basePlayer.subOutGameClock,
-      practiceStats: {
-        ...createEmptyPracticeStats(),
-        ...(savedPlayer.practiceStats || {}),
-      },
     }
   })
-
-  mergedPlayers.forEach((player) => {
-    player.practiceTotal = practiceCategories.reduce(
-      (sum, category) => sum + (player.practiceStats?.[category.key] || 0),
-      0,
-    )
-  })
-
-  return mergedPlayers
-}
-
-function saveGameState() {
-  const state = {
-    players: players.value,
-    gameClockSeconds: gameClockSeconds.value,
-    gameState: gameState.value === "PLAYING" ? "PAUSED" : gameState.value,
-    gameStatusText: gameState.value === "PLAYING" ? "PAUSED" : gameStatusText.value,
-    gameMainButtonText: gameState.value === "PLAYING" ? "RESUME CLOCK" : gameMainButtonText.value,
-  }
-
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
-}
-
-
-//导出比赛数据
-function exportGameData() {
-  const rows = [
-    ["Name", "Number", "Minutes", "Fouls"],
-    ...players.value.map((player) => [
-      player.name,
-      player.number,
-      (player.totalSeconds / 60).toFixed(1),
-      player.fouls,
-    ]),
-  ]
-
-  const csv = rows
-    .map((row) =>
-      row
-        .map((cell) => `"${String(cell).replaceAll('"', '""')}"`)
-        .join(",")
-    )
-    .join("\n")
-
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" })
-  const url = URL.createObjectURL(blob)
-  const link = document.createElement("a")
-
-  link.href = url
-  link.download = `Stats_${new Date().toISOString().slice(0, 10)}.csv`
-  document.body.appendChild(link)
-  link.click()
-  document.body.removeChild(link)
-  URL.revokeObjectURL(url)
 }
 
 function loadGameState(basePlayers) {
@@ -199,22 +151,47 @@ function loadGameState(basePlayers) {
   }
 }
 
-async function loadPlayersFromBackend() {
-  const response = await fetch(`${API_BASE_URL}/players`)
+async function fetchBackendPlayers(endpoint = "/players") {
+  const response = await fetch(`${API_BASE_URL}${endpoint}`)
 
   if (!response.ok) {
     throw new Error(`Failed to load players: ${response.status}`)
   }
 
-  const rawPlayers = await response.json()
-  return rawPlayers.map((player) => createPlayerState(player))
+  return response.json()
+}
+
+async function syncPracticeState({ silent = false } = {}) {
+  if (isPracticeSyncing.value) {
+    return
+  }
+
+  try {
+    isPracticeSyncing.value = true
+    const backendPlayers = await fetchBackendPlayers("/practice")
+    players.value = buildPlayersFromBackend(backendPlayers)
+    practiceSyncError.value = ""
+  } catch (error) {
+    console.error("Practice sync failed:", error)
+    practiceSyncError.value = "Practice sync paused. Retrying..."
+
+    if (!silent) {
+      throw error
+    }
+  } finally {
+    isPracticeSyncing.value = false
+  }
 }
 
 async function initializeAppState() {
   try {
     initializationError.value = ""
-    const backendPlayers = await loadPlayersFromBackend()
-    const hasSavedGameState = loadGameState(backendPlayers)
+    const backendPlayers = await fetchBackendPlayers("/players")
+    const initialPlayers = buildPlayersFromBackend(backendPlayers, {
+      preserveCurrentState: false,
+      preserveCurrentOrder: false,
+    })
+    const hasSavedGameState = loadGameState(initialPlayers)
 
     if (!hasSavedGameState) {
       setDefaultStarters()
@@ -228,6 +205,118 @@ async function initializeAppState() {
   }
 }
 
+function startPracticeSync() {
+  if (practiceSyncInterval.value) {
+    return
+  }
+
+  practiceSyncInterval.value = setInterval(() => {
+    syncPracticeState({ silent: true })
+  }, PRACTICE_SYNC_INTERVAL_MS)
+}
+
+function stopPracticeSync() {
+  if (!practiceSyncInterval.value) {
+    return
+  }
+
+  clearInterval(practiceSyncInterval.value)
+  practiceSyncInterval.value = null
+}
+
+function switchView(view) {
+  if (currentView.value === "game" && view !== "game" && gameState.value === "PLAYING") {
+    gameState.value = "PAUSED"
+    gameStatusText.value = "PAUSED"
+    gameMainButtonText.value = "RESUME CLOCK"
+    stopTicker()
+  }
+
+  currentView.value = view
+}
+
+async function updatePracticeStat(playerId, key, delta) {
+  try {
+    const response = await fetch(`${API_BASE_URL}/practice/${playerId}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        statKey: key,
+        delta,
+      }),
+    })
+
+    if (!response.ok) {
+      throw new Error(`Failed to update practice stat: ${response.status}`)
+    }
+
+    const backendPlayers = await response.json()
+    players.value = buildPlayersFromBackend(backendPlayers)
+    practiceSyncError.value = ""
+  } catch (error) {
+    console.error("Practice update failed:", error)
+    practiceSyncError.value = "Could not save practice update."
+  }
+}
+
+function sortPracticePlayers() {
+  players.value.sort((a, b) => (b.practiceTotal || 0) - (a.practiceTotal || 0))
+}
+
+async function resetPractice() {
+  try {
+    const response = await fetch(`${API_BASE_URL}/practice/reset`, {
+      method: "POST",
+    })
+
+    if (!response.ok) {
+      throw new Error(`Failed to reset practice stats: ${response.status}`)
+    }
+
+    const backendPlayers = await response.json()
+    players.value = buildPlayersFromBackend(backendPlayers, {
+      preserveCurrentOrder: false,
+    })
+    practiceSyncError.value = ""
+  } catch (error) {
+    console.error("Practice reset failed:", error)
+    practiceSyncError.value = "Could not reset practice stats."
+  }
+}
+
+function exportGameData() {
+  const rows = [
+    ["Name", "Number", "Minutes", "Fouls"],
+    ...players.value.map((player) => [
+      player.name,
+      player.number,
+      (player.totalSeconds / 60).toFixed(1),
+      player.fouls,
+    ]),
+  ]
+
+  const csv = rows
+    .map((row) =>
+      row
+        .map((cell) => `"${String(cell).replaceAll('"', '""')}"`)
+        .join(","),
+    )
+    .join("\n")
+
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement("a")
+
+  link.href = url
+  link.download = `Stats_${new Date().toISOString().slice(0, 10)}.csv`
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(url)
+}
+
 watch(
   [players, gameClockSeconds, gameState, gameStatusText, gameMainButtonText],
   () => {
@@ -237,32 +326,26 @@ watch(
 
     saveGameState()
   },
-  { deep: true }
+  { deep: true },
 )
 
+watch(currentView, async (view) => {
+  if (view === "practice" && !isInitializing.value && !initializationError.value) {
+    await syncPracticeState({ silent: true })
+    startPracticeSync()
+    return
+  }
 
-//首发
+  stopPracticeSync()
+})
+
 function setDefaultStarters() {
   players.value.forEach((player) => {
-    player.isOnCourt = defaultStarterNames.some((name) =>
-      player.name.includes(name)
-    )
+    player.isOnCourt = defaultStarterNames.some((name) => player.name.includes(name))
   })
 }
 
-
-//换人
 function togglePlayerOnCourt(playerId) {
-//换人逻辑
-// 找到球员
-// ↓
-// 如果 SETUP：随便切换上/下
-// ↓
-// 如果比赛中：
-//   如果他在场 → 换下，并记录换下时间
-//   如果他不在场：
-//     如果场上已有5人 → 禁止
-//     否则 → 换上
   const player = players.value.find((p) => p.id === playerId)
   if (!player) return
 
@@ -286,19 +369,13 @@ function togglePlayerOnCourt(playerId) {
     return
   }
 
-  //如果player.isOnCourt是true，代码不会走到这里，因此下面的case为：
-  //比赛中，当球员不在场，且当前人数小于5时，选中的球员上场且时间当前清零
-  //因为在比赛中发生，所以currentStint清空要写在这里
   player.isOnCourt = true
   player.currentStint = 0
 }
 
-
-//控制主按钮行为
 function handleMainAction() {
   const onCourtCount = players.value.filter((p) => p.isOnCourt).length
 
-  //选人阶段超过五人警告，若无视直接开始
   if (gameState.value === "SETUP") {
     if (onCourtCount !== 5) {
       const confirmed = window.confirm(`Starts with ${onCourtCount} players. Continue?`)
@@ -332,30 +409,22 @@ function handleMainAction() {
   }
 }
 
-
-//秒->显式时间
 function formatClock(totalSeconds) {
-  //计算分钟和秒分开计算，并补零：1:5 —> 01:05
   const m = Math.floor(totalSeconds / 60).toString().padStart(2, "0")
   const s = (totalSeconds % 60).toString().padStart(2, "0")
   return `${m}:${s}`
 }
 
-
-//计算犯规
 function adjustFoul(playerId, delta) {
   const player = players.value.find((p) => p.id === playerId)
   if (!player) return
 
-  //delta为+1/-1，使代码更优美
   const newFouls = player.fouls + delta
   if (newFouls < 0) return
 
   player.fouls = newFouls
 }
 
-
-//手动调表时，要同步修正场上球员的本段时间和总时间
 function syncGameClock(newSeconds) {
   const safeSeconds = Math.max(0, newSeconds)
   const diffSeconds = gameClockSeconds.value - safeSeconds
@@ -370,16 +439,11 @@ function syncGameClock(newSeconds) {
   gameClockSeconds.value = safeSeconds
 }
 
-
-//修改右上角时间
 function adjustGameClock(delta) {
   syncGameClock(gameClockSeconds.value + delta)
 }
 
-
-//开启计时器
 function startTicker() {
-  //停止旧计时器
   stopTicker()
 
   tickerInterval.value = setInterval(() => {
@@ -394,7 +458,6 @@ function startTicker() {
       return
     }
 
-    //场上球员时间++
     players.value.forEach((player) => {
       if (player.isOnCourt) {
         player.currentStint += 1
@@ -404,19 +467,13 @@ function startTicker() {
   }, 1000)
 }
 
-
-//停止计时器
 function stopTicker() {
   if (!tickerInterval.value) return
 
   clearInterval(tickerInterval.value)
   tickerInterval.value = null
-  //如果stopTicker是直接杀死这个计时器，那么为什么我在UI中点击start clock后，倒计时还是继续而不是被清零？
-  //因为stopTicker杀死的是“每秒减 1 的循环”这个计时器，而不是数据本身，startTicker() 会创建一个新计时器，继续使用当前剩余时间
 }
 
-
-//重置半场（不会更改球员犯规次数和总上场时间）
 function resetHalf() {
   const confirmed = window.confirm("Start 2nd Half?")
   if (!confirmed) return
@@ -434,11 +491,10 @@ function resetHalf() {
   })
 }
 
-
-//重开游戏
 function resetGameSetup() {
   const confirmed = window.confirm("New Game? This will clear all saved data.")
   if (!confirmed) return
+
   stopTicker()
   localStorage.removeItem(STORAGE_KEY)
 
@@ -462,20 +518,11 @@ onMounted(() => {
   initializeAppState()
 })
 
-//组件被移除之前停止计时器，写在这里可能没有意义，考虑移除
 onBeforeUnmount(() => {
   stopTicker()
+  stopPracticeSync()
 })
 </script>
-
-
-
-
-<!-- 
-使用条件渲染
-底下这个就是页面的显示逻辑，currentView就相当于是一个旋钮，调到哪个值，就显示哪个页面
-landing就是主页面，practice和game就是两个按钮下的两个不同的功能 
--->
 
 <template>
   <div
@@ -520,6 +567,8 @@ landing就是主页面，practice和game就是两个按钮下的两个不同的�
   <PracticeView
     v-else-if="currentView === 'practice'"
     :players="players"
+    :is-syncing="isPracticeSyncing"
+    :sync-error="practiceSyncError"
     @switch-view="switchView"
     @update-practice-stat="updatePracticeStat"
     @sort-practice="sortPracticePlayers"

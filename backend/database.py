@@ -3,6 +3,18 @@ from pathlib import Path
 
 DB_NAME = Path(__file__).resolve().parent / "drew_tracker.db"
 
+PRACTICE_STAT_KEYS = [
+    "charges",
+    "sprint",
+    "bDrives",
+    "pTouch",
+    "ast",
+    "stl",
+    "defl",
+    "dReb",
+    "oReb",
+]
+
 PLAYER_SEED_DATA = [
     (0, "Charlie Thornton", 0, "PF", "/Photos/Charlie.png"),
     (1, "Jalen Holmes", 1, "C", "/Photos/Jalen.png"),
@@ -66,6 +78,27 @@ def ensure_players_schema(cursor):
         )
 
 
+def ensure_practice_schema(cursor):
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS practice_stats (
+            player_id INTEGER PRIMARY KEY,
+            charges INTEGER NOT NULL DEFAULT 0,
+            sprint INTEGER NOT NULL DEFAULT 0,
+            bDrives INTEGER NOT NULL DEFAULT 0,
+            pTouch INTEGER NOT NULL DEFAULT 0,
+            ast INTEGER NOT NULL DEFAULT 0,
+            stl INTEGER NOT NULL DEFAULT 0,
+            defl INTEGER NOT NULL DEFAULT 0,
+            dReb INTEGER NOT NULL DEFAULT 0,
+            oReb INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(player_id) REFERENCES players(id)
+        )
+        """
+    )
+
+
 def seed_players(cursor):
     cursor.executemany(
         """
@@ -81,12 +114,126 @@ def seed_players(cursor):
     )
 
 
+def seed_practice_rows(cursor):
+    cursor.executemany(
+        """
+        INSERT INTO practice_stats (player_id)
+        VALUES (?)
+        ON CONFLICT(player_id) DO NOTHING
+        """,
+        [(player_id,) for player_id, *_ in PLAYER_SEED_DATA],
+    )
+
+
+def _build_practice_stats(row):
+    return {key: row[key] or 0 for key in PRACTICE_STAT_KEYS}
+
+
+def _practice_total(practice_stats):
+    return sum(practice_stats.values())
+
+
+def get_players_with_practice():
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT
+            p.id,
+            p.name,
+            p.number,
+            p.pos,
+            p.img,
+            ps.charges,
+            ps.sprint,
+            ps.bDrives,
+            ps.pTouch,
+            ps.ast,
+            ps.stl,
+            ps.defl,
+            ps.dReb,
+            ps.oReb
+        FROM players p
+        LEFT JOIN practice_stats ps ON ps.player_id = p.id
+        ORDER BY p.id
+        """
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    players = []
+    for row in rows:
+        practice_stats = _build_practice_stats(row)
+        players.append(
+            {
+                "id": row["id"],
+                "name": row["name"],
+                "number": row["number"],
+                "pos": row["pos"],
+                "img": row["img"],
+                "practiceStats": practice_stats,
+                "practiceTotal": _practice_total(practice_stats),
+            }
+        )
+
+    return players
+
+
+def increment_practice_stat(player_id, stat_key, delta):
+    if stat_key not in PRACTICE_STAT_KEYS:
+        raise ValueError(f"Unsupported practice stat: {stat_key}")
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        f"""
+        UPDATE practice_stats
+        SET {stat_key} = MAX(0, {stat_key} + ?),
+            updated_at = CURRENT_TIMESTAMP
+        WHERE player_id = ?
+        """,
+        (delta, player_id),
+    )
+
+    if cursor.rowcount == 0:
+        conn.close()
+        raise LookupError(f"Player {player_id} not found")
+
+    conn.commit()
+    conn.close()
+
+
+def reset_practice_stats():
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        UPDATE practice_stats
+        SET
+            charges = 0,
+            sprint = 0,
+            bDrives = 0,
+            pTouch = 0,
+            ast = 0,
+            stl = 0,
+            defl = 0,
+            dReb = 0,
+            oReb = 0,
+            updated_at = CURRENT_TIMESTAMP
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
 def init_db():
     conn = get_connection()
     cursor = conn.cursor()
 
     ensure_players_schema(cursor)
+    ensure_practice_schema(cursor)
     seed_players(cursor)
+    seed_practice_rows(cursor)
 
     conn.commit()
     conn.close()

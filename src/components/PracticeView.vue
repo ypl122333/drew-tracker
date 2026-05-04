@@ -7,6 +7,14 @@ const props = defineProps({
     type: Array,
     required: true,
   },
+  isSyncing: {
+    type: Boolean,
+    default: false,
+  },
+  syncError: {
+    type: String,
+    default: "",
+  },
 })
 
 const emit = defineEmits([
@@ -95,6 +103,9 @@ function switchChartMetric(metric) {
           <h1 class="text-lg font-extrabold tracking-tight leading-none">
             PRACTICE MODE
           </h1>
+          <div class="text-[9px] uppercase tracking-[0.24em] text-green-200 mt-0.5">
+            {{ syncError || (isSyncing ? "Syncing live data" : "Live sync connected") }}
+          </div>
         </div>
       </div>
 
