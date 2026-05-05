@@ -1,7 +1,0 @@
-1.先启动前端
-在虚拟环境中cd backend
-然后uvicorn main:app --reload
-
-
-2.再启动前端
-直接在目录中npm run dev即可
