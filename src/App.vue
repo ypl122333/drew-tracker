@@ -3,7 +3,6 @@ import { onBeforeUnmount, onMounted, ref, watch } from "vue"
 import {
   createEmptyPracticeStats,
   createPlayerState,
-  defaultStarterNames,
   practiceCategories,
 } from "./data/players"
 import LandingView from "./components/LandingView.vue"
@@ -16,15 +15,18 @@ const gameClockSeconds = ref(1200)
 const gameState = ref("SETUP")
 const gameStatusText = ref(null)
 const gameMainButtonText = ref(null)
-const tickerInterval = ref(null)
 const practiceSyncInterval = ref(null)
-const STORAGE_KEY = "drewTrackerState_v24_vue"
+const gameSyncInterval = ref(null)
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000"
 const PRACTICE_SYNC_INTERVAL_MS = 2000
+const GAME_SYNC_INTERVAL_MS = 500
 const isInitializing = ref(true)
 const initializationError = ref("")
 const isPracticeSyncing = ref(false)
 const practiceSyncError = ref("")
+const isGameSyncing = ref(false)
+const gameSyncError = ref("")
+const latestGameRequestId = ref(0)
 
 function calculatePracticeTotal(practiceStats) {
   return practiceCategories.reduce(
@@ -33,7 +35,7 @@ function calculatePracticeTotal(practiceStats) {
   )
 }
 
-function createSyncedPlayerState(rawPlayer, existingPlayer = null) {
+function createSyncedPlayerState(rawPlayer) {
   const basePlayer = createPlayerState(rawPlayer)
   const practiceStats = {
     ...createEmptyPracticeStats(),
@@ -42,34 +44,20 @@ function createSyncedPlayerState(rawPlayer, existingPlayer = null) {
 
   return {
     ...basePlayer,
-    ...(existingPlayer
-      ? {
-          currentStint: existingPlayer.currentStint ?? basePlayer.currentStint,
-          totalSeconds: existingPlayer.totalSeconds ?? basePlayer.totalSeconds,
-          fouls: existingPlayer.fouls ?? basePlayer.fouls,
-          isOnCourt: existingPlayer.isOnCourt ?? basePlayer.isOnCourt,
-          lastSubOutClock: existingPlayer.lastSubOutClock ?? basePlayer.lastSubOutClock,
-          subOutGameClock: existingPlayer.subOutGameClock ?? basePlayer.subOutGameClock,
-        }
-      : {}),
+    currentStint: rawPlayer.currentStint ?? 0,
+    totalSeconds: rawPlayer.totalSeconds ?? 0,
+    fouls: rawPlayer.fouls ?? 0,
+    isOnCourt: rawPlayer.isOnCourt ?? false,
+    lastSubOutClock: rawPlayer.lastSubOutClock ?? null,
+    subOutGameClock: rawPlayer.subOutGameClock ?? null,
     practiceStats,
     practiceTotal: rawPlayer.practiceTotal ?? calculatePracticeTotal(practiceStats),
   }
 }
 
-function buildPlayersFromBackend(
-  rawPlayers,
-  { preserveCurrentState = true, preserveCurrentOrder = true } = {},
-) {
-  const existingPlayersById = new Map(players.value.map((player) => [player.id, player]))
+function buildPlayersFromBackend(rawPlayers, { preserveCurrentOrder = true } = {}) {
   const currentOrderById = new Map(players.value.map((player, index) => [player.id, index]))
-
-  const nextPlayers = rawPlayers.map((player) =>
-    createSyncedPlayerState(
-      player,
-      preserveCurrentState ? existingPlayersById.get(player.id) : null,
-    ),
-  )
+  const nextPlayers = rawPlayers.map((player) => createSyncedPlayerState(player))
 
   if (preserveCurrentOrder && currentOrderById.size > 0) {
     nextPlayers.sort(
@@ -80,82 +68,19 @@ function buildPlayersFromBackend(
   return nextPlayers
 }
 
-function saveGameState() {
-  const state = {
-    players: players.value.map((player) => ({
-      id: player.id,
-      currentStint: player.currentStint,
-      totalSeconds: player.totalSeconds,
-      fouls: player.fouls,
-      isOnCourt: player.isOnCourt,
-      lastSubOutClock: player.lastSubOutClock,
-      subOutGameClock: player.subOutGameClock,
-    })),
-    gameClockSeconds: gameClockSeconds.value,
-    gameState: gameState.value === "PLAYING" ? "PAUSED" : gameState.value,
-    gameStatusText: gameState.value === "PLAYING" ? "PAUSED" : gameStatusText.value,
-    gameMainButtonText: gameState.value === "PLAYING" ? "RESUME CLOCK" : gameMainButtonText.value,
-  }
-
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
+function applyGameSnapshot(snapshot, options = {}) {
+  players.value = buildPlayersFromBackend(snapshot.players || [], options)
+  gameClockSeconds.value = snapshot.gameClockSeconds ?? 1200
+  gameState.value = snapshot.gameState ?? "SETUP"
+  gameStatusText.value = snapshot.gameStatusText ?? null
+  gameMainButtonText.value = snapshot.gameMainButtonText ?? null
 }
 
-function mergePlayersWithSavedState(basePlayers, savedPlayers) {
-  return basePlayers.map((basePlayer) => {
-    const savedPlayer = savedPlayers.find((player) => player.id === basePlayer.id)
-
-    if (!savedPlayer) {
-      return basePlayer
-    }
-
-    return {
-      ...basePlayer,
-      currentStint: savedPlayer.currentStint ?? basePlayer.currentStint,
-      totalSeconds: savedPlayer.totalSeconds ?? basePlayer.totalSeconds,
-      fouls: savedPlayer.fouls ?? basePlayer.fouls,
-      isOnCourt: savedPlayer.isOnCourt ?? basePlayer.isOnCourt,
-      lastSubOutClock: savedPlayer.lastSubOutClock ?? basePlayer.lastSubOutClock,
-      subOutGameClock: savedPlayer.subOutGameClock ?? basePlayer.subOutGameClock,
-    }
-  })
-}
-
-function loadGameState(basePlayers) {
-  const saved = localStorage.getItem(STORAGE_KEY)
-  if (!saved) {
-    players.value = basePlayers
-    return false
-  }
-
-  try {
-    const parsed = JSON.parse(saved)
-
-    if (Array.isArray(parsed.players)) {
-      players.value = mergePlayersWithSavedState(basePlayers, parsed.players)
-    } else {
-      players.value = basePlayers
-    }
-
-    if (typeof parsed.gameClockSeconds === "number") {
-      gameClockSeconds.value = parsed.gameClockSeconds
-    }
-
-    gameState.value = parsed.gameState || "PAUSED"
-    gameStatusText.value = parsed.gameStatusText || null
-    gameMainButtonText.value = parsed.gameMainButtonText || null
-    return true
-  } catch (error) {
-    console.error("Load game state failed:", error)
-    players.value = basePlayers
-    return false
-  }
-}
-
-async function fetchBackendPlayers(endpoint = "/players") {
+async function fetchBackendData(endpoint) {
   const response = await fetch(`${API_BASE_URL}${endpoint}`)
 
   if (!response.ok) {
-    throw new Error(`Failed to load players: ${response.status}`)
+    throw new Error(`Failed to load ${endpoint}: ${response.status}`)
   }
 
   return response.json()
@@ -168,8 +93,10 @@ async function syncPracticeState({ silent = false } = {}) {
 
   try {
     isPracticeSyncing.value = true
-    const backendPlayers = await fetchBackendPlayers("/practice")
-    players.value = buildPlayersFromBackend(backendPlayers)
+    const backendPlayers = await fetchBackendData("/practice")
+    players.value = buildPlayersFromBackend(backendPlayers, {
+      preserveCurrentOrder: currentView.value !== "practice",
+    })
     practiceSyncError.value = ""
   } catch (error) {
     console.error("Practice sync failed:", error)
@@ -183,19 +110,75 @@ async function syncPracticeState({ silent = false } = {}) {
   }
 }
 
+async function syncGameState({ silent = false } = {}) {
+  if (isGameSyncing.value) {
+    return
+  }
+
+  const requestId = ++latestGameRequestId.value
+
+  try {
+    isGameSyncing.value = true
+    const snapshot = await fetchBackendData("/game")
+    if (requestId !== latestGameRequestId.value) {
+      return
+    }
+
+    applyGameSnapshot(snapshot)
+    gameSyncError.value = ""
+  } catch (error) {
+    console.error("Game sync failed:", error)
+    gameSyncError.value = "Game sync paused. Retrying..."
+
+    if (!silent) {
+      throw error
+    }
+  } finally {
+    if (requestId === latestGameRequestId.value) {
+      isGameSyncing.value = false
+    }
+  }
+}
+
+async function sendGameCommand(endpoint, payload = undefined) {
+  const requestId = ++latestGameRequestId.value
+
+  try {
+    isGameSyncing.value = true
+    const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+      method: "POST",
+      headers: payload ? { "Content-Type": "application/json" } : undefined,
+      body: payload ? JSON.stringify(payload) : undefined,
+    })
+
+    if (!response.ok) {
+      const errorPayload = await response.json().catch(() => null)
+      const detail = errorPayload?.detail || `Failed to save ${endpoint}: ${response.status}`
+      throw new Error(detail)
+    }
+
+    const snapshot = await response.json()
+    if (requestId !== latestGameRequestId.value) {
+      return
+    }
+
+    applyGameSnapshot(snapshot)
+    gameSyncError.value = ""
+  } catch (error) {
+    console.error("Game command failed:", error)
+    gameSyncError.value = error.message || "Could not save game changes."
+  } finally {
+    if (requestId === latestGameRequestId.value) {
+      isGameSyncing.value = false
+    }
+  }
+}
+
 async function initializeAppState() {
   try {
     initializationError.value = ""
-    const backendPlayers = await fetchBackendPlayers("/players")
-    const initialPlayers = buildPlayersFromBackend(backendPlayers, {
-      preserveCurrentState: false,
-      preserveCurrentOrder: false,
-    })
-    const hasSavedGameState = loadGameState(initialPlayers)
-
-    if (!hasSavedGameState) {
-      setDefaultStarters()
-    }
+    const snapshot = await fetchBackendData("/game")
+    applyGameSnapshot(snapshot, { preserveCurrentOrder: false })
   } catch (error) {
     console.error("Failed to initialize app state:", error)
     initializationError.value = "Could not load players from the backend. Make sure FastAPI is running on http://localhost:8000."
@@ -224,14 +207,26 @@ function stopPracticeSync() {
   practiceSyncInterval.value = null
 }
 
-function switchView(view) {
-  if (currentView.value === "game" && view !== "game" && gameState.value === "PLAYING") {
-    gameState.value = "PAUSED"
-    gameStatusText.value = "PAUSED"
-    gameMainButtonText.value = "RESUME CLOCK"
-    stopTicker()
+function startGameSync() {
+  if (gameSyncInterval.value) {
+    return
   }
 
+  gameSyncInterval.value = setInterval(() => {
+    syncGameState({ silent: true })
+  }, GAME_SYNC_INTERVAL_MS)
+}
+
+function stopGameSync() {
+  if (!gameSyncInterval.value) {
+    return
+  }
+
+  clearInterval(gameSyncInterval.value)
+  gameSyncInterval.value = null
+}
+
+function switchView(view) {
   currentView.value = view
 }
 
@@ -253,7 +248,9 @@ async function updatePracticeStat(playerId, key, delta) {
     }
 
     const backendPlayers = await response.json()
-    players.value = buildPlayersFromBackend(backendPlayers)
+    players.value = buildPlayersFromBackend(backendPlayers, {
+      preserveCurrentOrder: currentView.value !== "practice",
+    })
     practiceSyncError.value = ""
   } catch (error) {
     console.error("Practice update failed:", error)
@@ -317,201 +314,66 @@ function exportGameData() {
   URL.revokeObjectURL(url)
 }
 
-watch(
-  [players, gameClockSeconds, gameState, gameStatusText, gameMainButtonText],
-  () => {
-    if (isInitializing.value || initializationError.value) {
-      return
-    }
-
-    saveGameState()
-  },
-  { deep: true },
-)
-
 watch(currentView, async (view) => {
   if (view === "practice" && !isInitializing.value && !initializationError.value) {
     await syncPracticeState({ silent: true })
     startPracticeSync()
-    return
+  } else {
+    stopPracticeSync()
   }
 
-  stopPracticeSync()
+  if (view === "game" && !isInitializing.value && !initializationError.value) {
+    await syncGameState({ silent: true })
+    startGameSync()
+  } else {
+    stopGameSync()
+  }
 })
 
-function setDefaultStarters() {
-  players.value.forEach((player) => {
-    player.isOnCourt = defaultStarterNames.some((name) => player.name.includes(name))
-  })
-}
-
 function togglePlayerOnCourt(playerId) {
-  const player = players.value.find((p) => p.id === playerId)
-  if (!player) return
-
-  const onCourtCount = players.value.filter((p) => p.isOnCourt).length
-
-  if (gameState.value === "SETUP") {
-    player.isOnCourt = !player.isOnCourt
-    return
-  }
-
-  if (player.isOnCourt) {
-    player.isOnCourt = false
-    player.lastSubOutClock = formatClock(gameClockSeconds.value)
-    player.subOutGameClock = gameClockSeconds.value
-    player.currentStint = 0
-    return
-  }
-
-  if (onCourtCount >= 5) {
-    window.alert("Max 5 players! Sub someone OUT first.")
-    return
-  }
-
-  player.isOnCourt = true
-  player.currentStint = 0
+  sendGameCommand(`/game/players/${playerId}/toggle`)
 }
 
 function handleMainAction() {
-  const onCourtCount = players.value.filter((p) => p.isOnCourt).length
+  const onCourtCount = players.value.filter((player) => player.isOnCourt).length
 
-  if (gameState.value === "SETUP") {
-    if (onCourtCount !== 5) {
-      const confirmed = window.confirm(`Starts with ${onCourtCount} players. Continue?`)
-      if (!confirmed) return
-    }
-
-    gameState.value = "PAUSED"
-    gameStatusText.value = "READY"
-    gameMainButtonText.value = null
-    return
-  }
-
-  if (gameState.value === "PAUSED") {
-    if (gameClockSeconds.value <= 0) {
-      window.alert("Period Ended. Reset Half before starting again.")
+  if (gameState.value === "SETUP" && onCourtCount !== 5) {
+    const confirmed = window.confirm(`Starts with ${onCourtCount} players. Continue?`)
+    if (!confirmed) {
       return
     }
 
-    gameState.value = "PLAYING"
-    gameStatusText.value = null
-    gameMainButtonText.value = null
-    startTicker()
+    sendGameCommand("/game/main-action", { allowShortHanded: true })
     return
   }
 
-  if (gameState.value === "PLAYING") {
-    gameState.value = "PAUSED"
-    gameStatusText.value = "PAUSED"
-    gameMainButtonText.value = "RESUME CLOCK"
-    stopTicker()
-  }
-}
-
-function formatClock(totalSeconds) {
-  const m = Math.floor(totalSeconds / 60).toString().padStart(2, "0")
-  const s = (totalSeconds % 60).toString().padStart(2, "0")
-  return `${m}:${s}`
+  sendGameCommand("/game/main-action", { allowShortHanded: false })
 }
 
 function adjustFoul(playerId, delta) {
-  const player = players.value.find((p) => p.id === playerId)
-  if (!player) return
-
-  const newFouls = player.fouls + delta
-  if (newFouls < 0) return
-
-  player.fouls = newFouls
+  sendGameCommand(`/game/players/${playerId}/fouls`, { delta })
 }
 
 function syncGameClock(newSeconds) {
-  const safeSeconds = Math.max(0, newSeconds)
-  const diffSeconds = gameClockSeconds.value - safeSeconds
-
-  players.value.forEach((player) => {
-    if (player.isOnCourt) {
-      player.currentStint = Math.max(0, player.currentStint + diffSeconds)
-      player.totalSeconds = Math.max(0, player.totalSeconds + diffSeconds)
-    }
-  })
-
-  gameClockSeconds.value = safeSeconds
+  sendGameCommand("/game/clock/sync", { seconds: newSeconds })
 }
 
 function adjustGameClock(delta) {
-  syncGameClock(gameClockSeconds.value + delta)
-}
-
-function startTicker() {
-  stopTicker()
-
-  tickerInterval.value = setInterval(() => {
-    if (gameClockSeconds.value > 0) {
-      gameClockSeconds.value -= 1
-    } else {
-      stopTicker()
-      gameState.value = "PAUSED"
-      gameStatusText.value = "HALF ENDED"
-      gameMainButtonText.value = "HALF ENDED"
-      window.alert("Period Ended")
-      return
-    }
-
-    players.value.forEach((player) => {
-      if (player.isOnCourt) {
-        player.currentStint += 1
-        player.totalSeconds += 1
-      }
-    })
-  }, 1000)
-}
-
-function stopTicker() {
-  if (!tickerInterval.value) return
-
-  clearInterval(tickerInterval.value)
-  tickerInterval.value = null
+  sendGameCommand("/game/clock/adjust", { delta })
 }
 
 function resetHalf() {
   const confirmed = window.confirm("Start 2nd Half?")
   if (!confirmed) return
 
-  stopTicker()
-  gameClockSeconds.value = 1200
-  gameState.value = "PAUSED"
-  gameStatusText.value = "PAUSED"
-  gameMainButtonText.value = "START 2ND HALF"
-
-  players.value.forEach((player) => {
-    player.currentStint = 0
-    player.lastSubOutClock = null
-    player.subOutGameClock = null
-  })
+  sendGameCommand("/game/reset-half")
 }
 
 function resetGameSetup() {
-  const confirmed = window.confirm("New Game? This will clear all saved data.")
+  const confirmed = window.confirm("New Game? This will clear all shared game data.")
   if (!confirmed) return
 
-  stopTicker()
-  localStorage.removeItem(STORAGE_KEY)
-
-  gameState.value = "SETUP"
-  gameClockSeconds.value = 1200
-  gameStatusText.value = null
-  gameMainButtonText.value = null
-
-  players.value.forEach((player) => {
-    player.currentStint = 0
-    player.totalSeconds = 0
-    player.fouls = 0
-    player.lastSubOutClock = null
-    player.subOutGameClock = null
-  })
-
-  setDefaultStarters()
+  sendGameCommand("/game/reset")
 }
 
 onMounted(() => {
@@ -519,8 +381,8 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
-  stopTicker()
   stopPracticeSync()
+  stopGameSync()
 })
 </script>
 
@@ -582,6 +444,8 @@ onBeforeUnmount(() => {
     :game-state="gameState"
     :status-text-override="gameStatusText"
     :main-button-text-override="gameMainButtonText"
+    :is-syncing="isGameSyncing"
+    :sync-error="gameSyncError"
     @switch-view="switchView"
     @toggle-player="togglePlayerOnCourt"
     @main-action="handleMainAction"

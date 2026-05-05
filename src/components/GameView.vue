@@ -22,6 +22,14 @@ const props = defineProps({
     type: String,
     default: null,
   },
+  isSyncing: {
+    type: Boolean,
+    default: false,
+  },
+  syncError: {
+    type: String,
+    default: "",
+  },
 })
 
 const emit = defineEmits([
@@ -234,6 +242,9 @@ function handleBackClick() {
             <span :class="statusClass">
               {{ statusText }}
             </span>
+            <div class="text-[9px] uppercase tracking-[0.24em] text-green-200 mt-0.5">
+              {{ syncError || (isSyncing ? "Syncing live game" : "Live sync connected") }}
+            </div>
           </div>
         </div>
 
