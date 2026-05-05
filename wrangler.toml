@@ -1,0 +1,8 @@
+name = "drew-tracker"
+compatibility_date = "2026-05-05"
+pages_build_output_dir = "dist"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "drew-tracker"
+database_id = "81030d5c-1a75-4e90-9f33-d808066134f3"
