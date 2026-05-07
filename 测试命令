@@ -4,4 +4,5 @@
 
 
 2.再启动前端
+启动一个新的terminal
 直接在目录中npm run dev即可

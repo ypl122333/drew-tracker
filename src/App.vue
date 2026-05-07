@@ -8,6 +8,7 @@ import {
 import LandingView from "./components/LandingView.vue"
 import PracticeView from "./components/PracticeView.vue"
 import GameView from "./components/GameView.vue"
+import AdminReviewView from "./components/AdminReviewView.vue"
 
 const currentView = ref("landing")
 const players = ref([])
@@ -17,7 +18,7 @@ const gameStatusText = ref(null)
 const gameMainButtonText = ref(null)
 const practiceSyncInterval = ref(null)
 const gameSyncInterval = ref(null)
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000"
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "/api"
 const PRACTICE_SYNC_INTERVAL_MS = 2000
 const GAME_SYNC_INTERVAL_MS = 500
 const isInitializing = ref(true)
@@ -181,7 +182,7 @@ async function initializeAppState() {
     applyGameSnapshot(snapshot, { preserveCurrentOrder: false })
   } catch (error) {
     console.error("Failed to initialize app state:", error)
-    initializationError.value = "Could not load players from the backend. Make sure FastAPI is running on http://localhost:8000."
+    initializationError.value = "Could not load players from the backend. Make sure the API is available at /api or set VITE_API_BASE_URL."
     players.value = []
   } finally {
     isInitializing.value = false
@@ -423,6 +424,12 @@ onBeforeUnmount(() => {
 
   <LandingView
     v-else-if="currentView === 'landing'"
+    @switch-view="switchView"
+  />
+
+  <AdminReviewView
+    v-else-if="currentView === 'admin'"
+    :api-base-url="API_BASE_URL"
     @switch-view="switchView"
   />
 

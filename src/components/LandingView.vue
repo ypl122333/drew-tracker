@@ -52,6 +52,13 @@ const emit = defineEmits(["switch-view"])
         </button>
       </div>
 
+      <button
+        @click="emit('switch-view', 'admin')"
+        class="mt-5 bg-white/10 hover:bg-white/20 border border-white/20 text-white px-5 py-2 rounded-lg text-xs font-black uppercase tracking-[0.2em] transition-all active:scale-95"
+      >
+        Admin
+      </button>
+
       <div class="mt-12 text-white/40 text-xs font-mono">
         Designed by Hanxiang(James) Li and Peilin(Patrick) Yang
       </div>
