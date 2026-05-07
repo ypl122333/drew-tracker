@@ -1,1 +1,4 @@
 ADMIN_TOKEN=change-me-before-deploy
+LLM_API_KEY=replace-me
+LLM_BASE_URL=https://api.openai.com/v1
+LLM_MODEL=

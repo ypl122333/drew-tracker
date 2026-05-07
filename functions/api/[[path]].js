@@ -12,6 +12,12 @@ export async function onRequest(context) {
   const services = createD1Services(context.env.DB)
   const handler = createApiHandler(services, {
     adminToken: context.env.ADMIN_TOKEN,
+    fetchImpl: context.fetch,
+    llm: {
+      apiKey: context.env.LLM_API_KEY,
+      baseUrl: context.env.LLM_BASE_URL,
+      model: context.env.LLM_MODEL,
+    },
   })
 
   return handler(context.request)

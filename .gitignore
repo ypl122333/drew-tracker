@@ -28,6 +28,7 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+backend/
 
 # 虚拟环境
 venv/
@@ -35,6 +36,11 @@ venv/
 
 # Python env 文件
 .env
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+.wrangler/
+测试命令
 
 # ===== Build / backend cache =====
 *.sqlite3

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref } from "vue"
+import { computed, ref, watch } from "vue"
 import { practiceCategories } from "../data/players"
 
 const props = defineProps({
@@ -7,11 +7,23 @@ const props = defineProps({
     type: Array,
     required: true,
   },
+  sortMode: {
+    type: String,
+    default: "default",
+  },
   isSyncing: {
     type: Boolean,
     default: false,
   },
   syncError: {
+    type: String,
+    default: "",
+  },
+  isGeneratingReport: {
+    type: Boolean,
+    default: false,
+  },
+  reportError: {
     type: String,
     default: "",
   },
@@ -22,9 +34,12 @@ const emit = defineEmits([
   "update-practice-stat",
   "sort-practice",
   "reset-practice",
+  "generate-report",
 ])
 
 const currentChartMetric = ref("total")
+const isReportModalOpen = ref(false)
+const reportNotes = ref("")
 
 const chartMetricLabels = practiceCategories.reduce(
   (acc, category) => ({ ...acc, [category.key]: category.label }),
@@ -86,6 +101,32 @@ function handleReset() {
 function switchChartMetric(metric) {
   currentChartMetric.value = metric
 }
+
+function openReportModal() {
+  isReportModalOpen.value = true
+}
+
+function closeReportModal() {
+  if (props.isGeneratingReport) {
+    return
+  }
+
+  isReportModalOpen.value = false
+}
+
+function confirmGenerateReport() {
+  emit("generate-report", reportNotes.value)
+}
+
+watch(
+  () => props.isGeneratingReport,
+  (isGenerating, wasGenerating) => {
+    if (wasGenerating && !isGenerating && !props.reportError) {
+      isReportModalOpen.value = false
+      reportNotes.value = ""
+    }
+  },
+)
 </script>
 
 <template>
@@ -119,10 +160,17 @@ function switchChartMetric(metric) {
 
       <div class="flex items-center gap-2 z-10">
         <button
+          @click="openReportModal"
+          class="bg-green-500 hover:bg-green-400 text-white text-xs px-3 py-1.5 rounded shadow transition-colors font-bold uppercase tracking-wider"
+        >
+          Generate Report
+        </button>
+
+        <button
           @click="handleSort"
           class="bg-yellow-500 hover:bg-yellow-400 text-black text-xs px-3 py-1.5 rounded shadow transition-colors font-bold uppercase tracking-wider"
         >
-          Sort
+          {{ sortMode === "score-desc" ? "Sorted" : "Sort" }}
         </button>
 
         <button
@@ -286,6 +334,65 @@ function switchChartMetric(metric) {
           >
             No practice data yet
           </div>
+        </div>
+      </div>
+    </div>
+
+    <div
+      v-if="isReportModalOpen"
+      class="fixed inset-0 z-40 flex items-center justify-center bg-[#07110c]/70 px-4"
+    >
+      <div class="w-full max-w-xl overflow-hidden rounded-2xl border border-[#2c6b4f] bg-[#f3fbf5] shadow-2xl">
+        <div class="bg-[#144935] px-5 py-4 text-white">
+          <div class="text-lg font-extrabold tracking-tight">
+            Generate Practice Report
+          </div>
+          <p class="mt-1 text-sm text-green-100">
+            Create an English post-practice report using the current stats and any coach notes.
+          </p>
+        </div>
+
+        <div class="px-5 py-4">
+          <p class="text-sm text-[#204434]">
+            Would you like to generate a report for this practice session? You can add extra context below for the LLM.
+          </p>
+
+          <label class="mt-4 block">
+            <span class="text-xs font-bold uppercase tracking-[0.16em] text-[#2f654c]">
+              Additional Notes
+            </span>
+            <textarea
+              v-model="reportNotes"
+              rows="6"
+              placeholder="Example: Focus on defensive effort, mention Andre's leadership, and note that transition finishing needs work."
+              class="mt-2 w-full rounded-xl border border-green-200 bg-white px-3 py-3 text-sm text-gray-800 shadow-inner outline-none transition focus:border-green-500 focus:ring-2 focus:ring-green-200"
+            />
+          </label>
+
+          <p
+            v-if="reportError"
+            class="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
+          >
+            {{ reportError }}
+          </p>
+        </div>
+
+        <div class="flex items-center justify-end gap-3 border-t border-green-100 bg-white px-5 py-4">
+          <button
+            @click="closeReportModal"
+            :disabled="isGeneratingReport"
+            class="rounded-lg border border-[#b9d8c5] px-4 py-2 text-sm font-bold text-[#29523f] transition hover:bg-[#eef7f0] disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            Cancel
+          </button>
+
+          <button
+            @click="confirmGenerateReport"
+            :disabled="isGeneratingReport"
+            class="rounded-lg bg-[#1d6a4d] px-4 py-2 text-sm font-bold text-white shadow transition hover:bg-[#16553d] disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {{ isGeneratingReport ? "Generating..." : "Confirm & Download" }}
+          </button>
         </div>
       </div>
     </div>

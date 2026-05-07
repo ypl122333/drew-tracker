@@ -28,6 +28,9 @@ const practiceSyncError = ref("")
 const isGameSyncing = ref(false)
 const gameSyncError = ref("")
 const latestGameRequestId = ref(0)
+const isGeneratingPracticeReport = ref(false)
+const practiceReportError = ref("")
+const practiceSortMode = ref("default")
 
 function calculatePracticeTotal(practiceStats) {
   return practiceCategories.reduce(
@@ -69,6 +72,26 @@ function buildPlayersFromBackend(rawPlayers, { preserveCurrentOrder = true } = {
   return nextPlayers
 }
 
+function applyPracticeSort(nextPlayers) {
+  if (practiceSortMode.value !== "score-desc") {
+    return nextPlayers
+  }
+
+  const currentOrderById = new Map(players.value.map((player, index) => [player.id, index]))
+
+  return [...nextPlayers].sort((a, b) => {
+    if ((b.practiceTotal || 0) !== (a.practiceTotal || 0)) {
+      return (b.practiceTotal || 0) - (a.practiceTotal || 0)
+    }
+
+    return (currentOrderById.get(a.id) ?? a.id) - (currentOrderById.get(b.id) ?? b.id)
+  })
+}
+
+function sortPlayersById(nextPlayers) {
+  return [...nextPlayers].sort((a, b) => a.id - b.id)
+}
+
 function applyGameSnapshot(snapshot, options = {}) {
   players.value = buildPlayersFromBackend(snapshot.players || [], options)
   gameClockSeconds.value = snapshot.gameClockSeconds ?? 1200
@@ -95,9 +118,9 @@ async function syncPracticeState({ silent = false } = {}) {
   try {
     isPracticeSyncing.value = true
     const backendPlayers = await fetchBackendData("/practice")
-    players.value = buildPlayersFromBackend(backendPlayers, {
+    players.value = applyPracticeSort(buildPlayersFromBackend(backendPlayers, {
       preserveCurrentOrder: currentView.value !== "practice",
-    })
+    }))
     practiceSyncError.value = ""
   } catch (error) {
     console.error("Practice sync failed:", error)
@@ -249,9 +272,9 @@ async function updatePracticeStat(playerId, key, delta) {
     }
 
     const backendPlayers = await response.json()
-    players.value = buildPlayersFromBackend(backendPlayers, {
+    players.value = applyPracticeSort(buildPlayersFromBackend(backendPlayers, {
       preserveCurrentOrder: currentView.value !== "practice",
-    })
+    }))
     practiceSyncError.value = ""
   } catch (error) {
     console.error("Practice update failed:", error)
@@ -260,7 +283,14 @@ async function updatePracticeStat(playerId, key, delta) {
 }
 
 function sortPracticePlayers() {
-  players.value.sort((a, b) => (b.practiceTotal || 0) - (a.practiceTotal || 0))
+  if (practiceSortMode.value === "score-desc") {
+    practiceSortMode.value = "default"
+    players.value = sortPlayersById(players.value)
+    return
+  }
+
+  practiceSortMode.value = "score-desc"
+  players.value = applyPracticeSort(players.value)
 }
 
 async function resetPractice() {
@@ -274,6 +304,7 @@ async function resetPractice() {
     }
 
     const backendPlayers = await response.json()
+    practiceSortMode.value = "default"
     players.value = buildPlayersFromBackend(backendPlayers, {
       preserveCurrentOrder: false,
     })
@@ -281,6 +312,49 @@ async function resetPractice() {
   } catch (error) {
     console.error("Practice reset failed:", error)
     practiceSyncError.value = "Could not reset practice stats."
+  }
+}
+
+async function generatePracticeReport(notes) {
+  try {
+    isGeneratingPracticeReport.value = true
+    practiceReportError.value = ""
+
+    const response = await fetch(`${API_BASE_URL}/practice/report`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        notes,
+      }),
+    })
+
+    if (!response.ok) {
+      const errorPayload = await response.json().catch(() => null)
+      const detail = errorPayload?.detail || `Failed to generate report: ${response.status}`
+      throw new Error(detail)
+    }
+
+    const blob = await response.blob()
+    const contentDisposition = response.headers.get("Content-Disposition") || ""
+    const filenameMatch = /filename="([^"]+)"/.exec(contentDisposition)
+    const filename =
+      filenameMatch?.[1] || `practice-report-${new Date().toISOString().slice(0, 10)}.txt`
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement("a")
+
+    link.href = url
+    link.download = filename
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+  } catch (error) {
+    console.error("Practice report generation failed:", error)
+    practiceReportError.value = error.message || "Could not generate practice report."
+  } finally {
+    isGeneratingPracticeReport.value = false
   }
 }
 
@@ -436,12 +510,16 @@ onBeforeUnmount(() => {
   <PracticeView
     v-else-if="currentView === 'practice'"
     :players="players"
+    :sort-mode="practiceSortMode"
     :is-syncing="isPracticeSyncing"
     :sync-error="practiceSyncError"
+    :is-generating-report="isGeneratingPracticeReport"
+    :report-error="practiceReportError"
     @switch-view="switchView"
     @update-practice-stat="updatePracticeStat"
     @sort-practice="sortPracticePlayers"
     @reset-practice="resetPractice"
+    @generate-report="generatePracticeReport"
   />
 
   <GameView

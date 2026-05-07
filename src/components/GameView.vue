@@ -229,10 +229,10 @@ function handleBackClick() {
         <div class="flex items-center gap-3 z-10">
           <button
             @click="handleBackClick"
-            class="text-green-300 hover:text-white transition-colors text-2xl leading-none"
+            class="flex items-center text-green-300 hover:text-white transition-colors"
             title="Back to Menu"
           >
-            Back
+            <span class="ml-1 text-xs font-bold uppercase">Menu</span>
           </button>
 
           <div>

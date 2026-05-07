@@ -1,8 +1,21 @@
+import { generatePracticeReport } from "./practice-report.js"
+
 function json(payload, status = 200) {
   return Response.json(payload, {
     status,
     headers: {
       "Cache-Control": "no-store",
+    },
+  })
+}
+
+function textAttachment(content, filename, status = 200) {
+  return new Response(content, {
+    status,
+    headers: {
+      "Cache-Control": "no-store",
+      "Content-Type": "text/plain; charset=utf-8",
+      "Content-Disposition": `attachment; filename="${filename}"`,
     },
   })
 }
@@ -32,7 +45,7 @@ function ensureAdmin(request, adminToken) {
 }
 
 export function createApiHandler(services, options = {}) {
-  const { adminToken } = options
+  const { adminToken, fetchImpl, llm } = options
 
   return async function handleApiRequest(request) {
     try {
@@ -66,6 +79,17 @@ export function createApiHandler(services, options = {}) {
 
       if (method === "POST" && path === "/practice/reset") {
         return json(await services.resetPracticeStats())
+      }
+
+      if (method === "POST" && path === "/practice/report") {
+        const payload = await readJson(request)
+        const players = await services.getPlayersWithPractice()
+        const report = await generatePracticeReport(players, payload.notes || "", {
+          fetchImpl,
+          llm,
+        })
+        const reportDate = new Date().toISOString().slice(0, 10)
+        return textAttachment(report, `practice-report-${reportDate}.txt`)
       }
 
       if (method === "GET" && path === "/game") {
